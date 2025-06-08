@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from app.core.config import settings
+from app.core.kafka_logger import setup_kafka_logging  # 🆕 Novo import
 from app.routers import auth, security
 from app.dependencies import get_cache_repository
 
@@ -12,13 +13,15 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger(__name__)
 
+# 🆕 Setup Kafka logging
+kafka_handler = setup_kafka_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
+    logger = logging.getLogger("main")
     logger.info("Starting CallerWatch API...")
 
     # Initialize connections
@@ -28,9 +31,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    logger.info("Shutting down CallerWatch API...")
-    await cache_repo.disconnect()
-    logger.info("Connections closed")
+    if kafka_handler and kafka_handler.producer:
+        kafka_handler.producer.close()
+    logger.info("CallerWatch API shutdown complete")
 
 # Create FastAPI app
 app = FastAPI(

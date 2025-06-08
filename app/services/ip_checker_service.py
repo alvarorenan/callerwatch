@@ -39,8 +39,11 @@ class AbuseIPDBProvider(IPCheckProvider):
     async def check_ip(self, ip: str) -> Dict[str, Any]:
         """Check IP using AbuseIPDB"""
         if not self.api_key:
+            logger.warning("AbuseIPDB API key not configured")
             return {"score": 0, "error": "API key not configured"}
 
+        logger.info(f"Checking IP {ip} with AbuseIPDB...")
+        
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 headers = {
@@ -53,23 +56,41 @@ class AbuseIPDBProvider(IPCheckProvider):
                     "verbose": ""
                 }
 
+                logger.info(f"Making request to AbuseIPDB for {ip}")
                 response = await client.get(
                     f"{self.base_url}/check",
                     headers=headers,
                     params=params
                 )
 
+                logger.info(f"AbuseIPDB response status: {response.status_code}")
+                
                 if response.status_code == 200:
                     data = response.json()
+                    logger.info(f"AbuseIPDB full response: {data}")
+                    
                     ip_data = data.get("data", {})
+                    # 🔥 CORREÇÃO: usar abuseConfidenceScore em vez de abuseConfidencePercentage
+                    score = ip_data.get("abuseConfidenceScore", 0)  # Era abuseConfidencePercentage
+                    
+                    logger.info(f"AbuseIPDB score for {ip}: {score}")
+                    logger.info(f"Usage type: {ip_data.get('usageType')}")
+                    logger.info(f"Country: {ip_data.get('countryCode')}")
+                    logger.info(f"Total reports: {ip_data.get('totalReports', 0)}")
+                    
                     return {
-                        "score": ip_data.get("abuseConfidencePercentage", 0),
+                        "score": score,
                         "usage_type": ip_data.get("usageType"),
                         "country": ip_data.get("countryCode"),
                         "reports": ip_data.get("totalReports", 0),
-                        "last_reported": ip_data.get("lastReportedAt")
+                        "last_reported": ip_data.get("lastReportedAt"),
+                        "is_tor": ip_data.get("isTor", False),
+                        "is_whitelisted": ip_data.get("isWhitelisted", False),
+                        "isp": ip_data.get("isp"),
+                        "domain": ip_data.get("domain")
                     }
                 else:
+                    logger.error(f"AbuseIPDB API error: {response.status_code} - {response.text}")
                     return {"score": 0, "error": f"HTTP {response.status_code}"}
 
         except Exception as e:
@@ -86,13 +107,17 @@ class IPCheckerService:
 
     def _init_providers(self):
         """Initialize available providers"""
+        logger.info(f"Initializing providers...")
+        logger.info(f"AbuseIPDB API key configured: {bool(settings.ABUSEIPDB_API_KEY)}")
+        
         if settings.ABUSEIPDB_API_KEY:
             self.providers.append(
                 AbuseIPDBProvider(settings.ABUSEIPDB_API_KEY))
+            logger.info("AbuseIPDB provider added")
+        else:
+            logger.warning("AbuseIPDB API key not found in settings")
 
-        # Add more providers here
-        # if settings.OTX_API_KEY:
-        #     self.providers.append(OTXProvider(settings.OTX_API_KEY))
+        logger.info(f"Total providers initialized: {len(self.providers)}")
 
     async def check_ip_comprehensive(self, ip: str) -> SecurityScore:
         """Perform comprehensive IP check using all providers"""
@@ -147,10 +172,12 @@ class IPCheckerService:
         )
 
     def _calculate_reputation(self, score: int) -> ReputationLevel:
-        """Calculate reputation based on score"""
-        if score >= 75:
+        """Calculate reputation based on score with more realistic thresholds"""
+        if score >= 75:  # Score muito alto = definitivamente malicioso
             return ReputationLevel.MALICIOUS
-        elif score >= 25:
+        elif score >= 25:  # Score médio = suspeito  
             return ReputationLevel.SUSPICIOUS
-        else:
+        elif score >= 5:   # Score baixo = suspeito leve
+            return ReputationLevel.SUSPICIOUS
+        else:  # Score 0-4 = seguro
             return ReputationLevel.SAFE
